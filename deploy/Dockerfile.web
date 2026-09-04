@@ -1,0 +1,30 @@
+# @author: liuqinhe
+# 前端镜像：Vite 构建产物 + nginx（同时承担 /api 反代，让外层反代原样透传前缀）
+# 构建上下文是项目根目录。
+#
+# CONTEXT_PATH 是构建期参数而不是运行期变量：SPA 的资源路径由 Vite 的 base
+# 在打包时写死，运行期再改 nginx 前缀会和 index.html 里的 /xxx/assets 对不上。
+ARG CONTEXT_PATH=/devsupport
+
+FROM docker.m.daocloud.io/library/node:20-alpine AS build
+ARG CONTEXT_PATH
+WORKDIR /app
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm config set registry https://registry.npmmirror.com && npm ci
+
+COPY frontend/ ./
+ENV VITE_BASE=${CONTEXT_PATH}/
+RUN npm run build
+
+FROM docker.m.daocloud.io/library/nginx:alpine
+ARG CONTEXT_PATH
+ENV TZ=Asia/Shanghai
+
+COPY --from=build /app/dist /usr/share/nginx/html${CONTEXT_PATH}
+COPY deploy/nginx/app.conf.template /tmp/app.conf.template
+RUN sed "s|__CONTEXT_PATH__|${CONTEXT_PATH}|g" /tmp/app.conf.template \
+        > /etc/nginx/conf.d/default.conf \
+    && rm /tmp/app.conf.template
+
+EXPOSE 80

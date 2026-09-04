@@ -1,0 +1,182 @@
+# @author: liuqinhe
+# DevSupport AI —— 基础编排（本地与服务器共用）
+# 服务器上必须叠加 docker-compose.server.yml：
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
+#
+# 独立 name + 独立 network，避免和同机上其它 compose 项目的服务名（app / mysql / redis）串台。
+name: devsupport-prod
+
+services:
+  mysql:
+    image: docker.m.daocloud.io/library/mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
+      MYSQL_DATABASE: ${MYSQL_DB:-devsupport}
+      MYSQL_USER: ${MYSQL_USER:-devsupport}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      # 收紧 MySQL 内存：关掉 performance_schema、缩小 buffer pool
+      - --performance-schema=OFF
+      - --innodb-buffer-pool-size=128M
+    ports:
+      - "${MYSQL_PUBLISH:-127.0.0.1:3308}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  redis:
+    image: docker.m.daocloud.io/library/redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "900", "1", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "${REDIS_PUBLISH:-127.0.0.1:6381}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ---- Milvus standalone 及其依赖（仅栈内互通，不发布到宿主机）----
+  etcd:
+    image: quay.m.daocloud.io/coreos/etcd:v3.5.5
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+      - TZ=Asia/Shanghai
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    image: docker.m.daocloud.io/minio/minio:RELEASE.2023-03-20T20-16-18Z
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?required}
+      TZ: Asia/Shanghai
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - minio_data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    image: docker.m.daocloud.io/milvusdb/milvus:v2.4.1
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:?required}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:?required}
+      TZ: Asia/Shanghai
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_started
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 20s
+      retries: 12
+      start_period: 120s
+
+  # ---- 应用 ----
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: devsupport-api:latest
+    restart: unless-stopped
+    environment:
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?required}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_MODEL_SMALL: ${LLM_MODEL_SMALL:-qwen-turbo}
+      LLM_MODEL_LARGE: ${LLM_MODEL_LARGE:-qwen-plus}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-v3}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}
+      RERANK_MODEL: ${RERANK_MODEL:-gte-rerank-v2}
+
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${MYSQL_USER:-devsupport}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
+      MYSQL_DB: ${MYSQL_DB:-devsupport}
+
+      MILVUS_URI: http://milvus:19530
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-knowledge_chunk}
+      REDIS_URL: redis://redis:6379/0
+
+      JWT_SECRET: ${JWT_SECRET:?required}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-720}
+
+      APP_ENV: ${APP_ENV:-prod}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TZ: Asia/Shanghai
+    volumes:
+      # 上传文件在容器可写层里，重建 api 会丢。挂到宿主机，下次只重建镜像也不会清掉。
+      - ../data/uploads:/srv/data/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        CONTEXT_PATH: ${CONTEXT_PATH:-/devsupport}
+    image: devsupport-web:latest
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "${APP_PUBLISH:-127.0.0.1:8090}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql_data:
+  redis_data:
+  etcd_data:
+  minio_data:
+  milvus_data:

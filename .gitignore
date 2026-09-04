@@ -1,0 +1,37 @@
+.DS_Store
+**/.DS_Store
+__pycache__/
+*.pyc
+*.log
+*.pem
+id_rsa
+id_rsa.pub
+.idea/
+.vscode/
+.cursor/
+target/
+node_modules/
+dist/
+
+backend/.venv/
+backend/.env
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/*.egg-info/
+
+# 本机自带 Python 3.9，项目要求 >=3.11，用便携运行时补齐（见 Makefile 的 venv 目标）
+.toolchain/
+
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# 真实密钥只落在服务器上，仓库只保留 .env.example / .env.server.example
+.env
+!.env.example
+!.env.server.example
+deploy/.env
+
+# 用户上传的原始文档：属于租户数据，不进仓库
+# （data/knowledge/ 是运营维护的内置资料，要进仓库）
+data/uploads/
