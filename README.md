@@ -19,6 +19,14 @@
 
 内部侧的「工作台」可看工单、AI 诊断面板和 React Flow 链路可视化；「运营指标」页可看 AI 解决率、意图分布、按租户 Token 成本，并一键运行评估集。
 
+## 平台演示效果
+
+![登录页](https://github.com/default8421/DevSupport-AI/releases/download/screenshots/login.png)
+
+![知识库](https://github.com/default8421/DevSupport-AI/releases/download/screenshots/knowledge.png)
+
+![智能助手对话](https://github.com/default8421/DevSupport-AI/releases/download/screenshots/chat.png)
+
 ## 技术栈
 
 | 层 | 选型 |
